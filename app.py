@@ -1,116 +1,119 @@
 import streamlit as st
-import openpyxl
-from reportlab.lib.pagesizes import letter
+import pandas as pd
+from reportlab.lib.pagesizes import landscape, letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 import io
 
-st.set_page_config(page_title="Excel Calc to PDF Generator", page_icon="📊", layout="centered")
+st.set_page_config(page_title="Arrear Bill Generator", page_icon="💸", layout="wide")
 
-st.title("📊 Excel Calc to PDF Generator")
-st.write("Upload an Excel sheet template containing formulas, provide inputs, and download a calculated PDF report.")
+st.title("💸 Arrear Bill Generator")
+st.write("Upload your previous salary details, apply the revised rates, and generate your arrear bill PDF.")
 
-# --- STEP 1: EXCEL TEMPLATE UPLOAD ---
-uploaded_file = st.file_uploader("Step 1: Upload your Excel Template (.xlsx)", type=["xlsx"])
+# --- STEP 1: DEFINE NEW RATES ---
+st.header("1. Set Revised Rates (The 'Due' Criteria)")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    new_da_pct = st.number_input("Revised DA %", value=50.0, step=1.0)
+with col2:
+    new_hra_pct = st.number_input("Revised HRA %", value=27.0, step=1.0)
+with col3:
+    new_nps_pct = st.number_input("Revised NPS Deduction %", value=10.0, step=1.0)
+
+# --- STEP 2: UPLOAD RECEIPTS ---
+st.header("2. Upload Salary Data")
+st.info("Your Excel file should have the following columns: Month, Basic_Drawn, DA_Drawn, HRA_Drawn, NPS_Drawn")
+
+uploaded_file = st.file_uploader("Upload Yearly Salary Receipt (.xlsx)", type=["xlsx"])
 
 if uploaded_file:
-    # Read the file into memory using openpyxl
-    file_bytes = uploaded_file.read()
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=False) # Keep formulas intact
-    sheet = wb.active
-    
-    st.success(f"Successfully loaded sheet: '{sheet.title}'")
-    
-    st.subheader("📝 Step 2: Enter Input Values")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        input_cell_1 = st.text_input("First Input Target Cell (e.g., A1)", value="A1")
-        input_val_1 = st.number_input("Value for First Cell", value=100.0)
+    # Read the uploaded Excel file
+    try:
+        df = pd.read_excel(uploaded_file)
+        st.success("File uploaded successfully!")
         
-    with col2:
-        input_cell_2 = st.text_input("Second Input Target Cell (e.g., A2)", value="A2")
-        input_val_2 = st.number_input("Value for Second Cell", value=25.0)
+        # --- STEP 3: PERFORM CALCULATIONS ---
+        st.header("3. Calculation Preview")
         
-    st.subheader("🎯 Step 3: Specify Output Cells to Fetch")
-    output_cell_1 = st.text_input("Target Formula/Output Cell to read (e.g., B1)", value="B1")
-    
-    # --- STEP 2: PERFORM EXCEL CALCULATION ---
-    if st.button("Run Calculation & Preview"):
-        # Inject inputs into the spreadsheet object
-        sheet[input_cell_1] = input_val_1
-        sheet[input_cell_2] = input_val_2
+        # Calculate Due Amounts
+        # Assuming Basic remains the same, but allowances change. 
+        df['DA_Due'] = df['Basic_Drawn'] * (new_da_pct / 100)
+        df['HRA_Due'] = df['Basic_Drawn'] * (new_hra_pct / 100)
         
-        # Grab formula or placeholder raw contents
-        raw_output_formula = sheet[output_cell_1].value
+        # NPS is usually calculated on (Basic + DA)
+        df['NPS_Due'] = (df['Basic_Drawn'] + df['DA_Due']) * (new_nps_pct / 100)
         
-        st.info(f"Injected inputs into {input_cell_1} and {input_cell_2}.")
+        # Calculate Arrears (Due - Drawn)
+        df['DA_Arrear'] = df['DA_Due'] - df['DA_Drawn']
+        df['HRA_Arrear'] = df['HRA_Due'] - df['HRA_Drawn']
         
-        # NOTE: Openpyxl does not contain a live mathematical cell engine to execute formulas.
-        # We mimic the engine math logic in python fallback code so it runs everywhere for free seamlessly.
-        calc_result = 0.0
-        if raw_output_formula == f"={input_cell_1}+{input_cell_2}" or raw_output_formula == f"={input_cell_1.lower()}+{input_cell_2.lower()}":
-            calc_result = input_val_1 + input_val_2
-        elif raw_output_formula == f"={input_cell_1}*{input_cell_2}" or raw_output_formula == f"={input_cell_1.lower()}*{input_cell_2.lower()}":
-            calc_result = input_val_1 * input_val_2
-        else:
-            # Fallback mock calculation loop if custom complex logic is used
-            calc_result = input_val_1 * input_val_2 
+        # NPS deduction arrear (If deduction increases, payable amount decreases)
+        df['NPS_Arrear_Deduction'] = df['NPS_Due'] - df['NPS_Drawn']
+        
+        # Net Arrear Payable per month
+        df['Net_Arrear_Payable'] = df['DA_Arrear'] + df['HRA_Arrear'] - df['NPS_Arrear_Deduction']
+        
+        # Show the calculated dataframe to the user
+        st.dataframe(df.style.format("{:.2f}", subset=['DA_Due', 'DA_Arrear', 'Net_Arrear_Payable']))
+        
+        # Calculate Totals
+        total_payable = df['Net_Arrear_Payable'].sum()
+        st.metric(label="Total Net Arrear Payable", value=f"₹ {total_payable:,.2f}")
+        
+        # --- STEP 4: GENERATE PDF ---
+        st.header("4. Download Official Bill")
+        
+        if st.button("Generate PDF Bill"):
+            pdf_buffer = io.BytesIO()
+            # Landscape orientation to fit the table
+            doc = SimpleDocTemplate(pdf_buffer, pagesize=landscape(letter), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+            story = []
+            styles = getSampleStyleSheet()
             
-        st.metric(label=f"Calculated Result (Cell {output_cell_1})", value=f"{calc_result:,}")
-        
-        # --- STEP 3: GENERATE DESIGNER PDF ---
-        pdf_buffer = io.BytesIO()
-        doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
-        story = []
-        
-        # Document Styling
-        styles = getSampleStyleSheet()
-        title_style = ParagraphStyle(
-            'DocTitle',
-            parent=styles['Heading1'],
-            fontSize=24,
-            textColor=colors.HexColor("#1E3A8A"),
-            spaceAfter=15
-        )
-        normal_style = styles['Normal']
-        
-        # PDF Content Assembly
-        story.append(Paragraph("Automated Calculation Report", title_style))
-        story.append(Paragraph(f"Generated directly from spreadsheet engine template: {uploaded_file.name}", normal_style))
-        story.append(Spacer(1, 20))
-        
-        # Build Data Presentation Table
-        data = [
-            [Paragraph("<b>Item Description / Metric</b>", normal_style), Paragraph("<b>Cell Coordinates</b>", normal_style), Paragraph("<b>Value</b>", normal_style)],
-            [Paragraph("Input Metric One", normal_style), input_cell_1, str(input_val_1)],
-            [Paragraph("Input Metric Two", normal_style), input_cell_2, str(input_val_2)],
-            [Paragraph("<b>Final Calculated Output</b>", normal_style), output_cell_1, f"<b>{calc_result:,}</b>"]
-        ]
-        
-        report_table = Table(data, colWidths=[250, 120, 120])
-        report_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#F3F4F6")),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.HexColor("#1F2937")),
-            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-            ('TOPPADDING', (0,0), (-1,-1), 8),
-            ('LINEBELOW', (0,0), (-1,0), 1, colors.HexColor("#D1D5DB")),
-            ('LINEBELOW', (0,-1), (-1,-1), 1.5, colors.HexColor("#1E3A8A")),
-            ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#EFF6FF"))
-        ]))
-        
-        story.append(report_table)
-        doc.build(story)
-        
-        # --- STEP 4: PRESENT COMPLETED FILE DOWNLOAD ---
-        st.subheader("📥 Step 4: Download Document")
-        st.download_button(
-            label="Download Generated Report PDF",
-            data=pdf_buffer.getvalue(),
-            file_name="Calculation_Report.pdf",
-            mime="application/pdf"
-        )
-else:
-    st.info("💡 Awaiting an Excel sheet upload to begin parsing pipelines.")
+            title_style = ParagraphStyle('DocTitle', parent=styles['Heading1'], fontSize=18, alignment=1, spaceAfter=20)
+            story.append(Paragraph("Official Arrear Bill Statement", title_style))
+            story.append(Paragraph(f"Revised Rates Applied: DA @ {new_da_pct}%, HRA @ {new_hra_pct}%, NPS @ {new_nps_pct}%", styles['Normal']))
+            story.append(Spacer(1, 20))
+            
+            # Prepare data for PDF Table
+            # Converting DataFrame to a list of lists for ReportLab
+            table_data = [df.columns.to_list()] # Header row
+            for index, row in df.iterrows():
+                # Round and convert to string for clean PDF display
+                formatted_row = [str(round(val, 2)) if isinstance(val, (int, float)) else str(val) for val in row]
+                table_data.append(formatted_row)
+                
+            # Add Total Row
+            total_row = ["TOTAL"] + [""] * (len(df.columns) - 2) + [f"₹ {total_payable:,.2f}"]
+            table_data.append(total_row)
+            
+            # Create PDF Table
+            pdf_table = Table(table_data)
+            pdf_table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#4F46E5")),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,0), 10),
+                ('BOTTOMPADDING', (0,0), (-1,0), 12),
+                ('BACKGROUND', (0,1), (-1,-2), colors.HexColor("#F3F4F6")),
+                ('GRID', (0,0), (-1,-1), 1, colors.black),
+                ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
+                ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#E5E7EB")),
+            ]))
+            
+            story.append(pdf_table)
+            doc.build(story)
+            
+            st.download_button(
+                label="📥 Download Arrear Bill (PDF)",
+                data=pdf_buffer.getvalue(),
+                file_name="Arrear_Bill.pdf",
+                mime="application/pdf"
+            )
+            
+    except Exception as e:
+        st.error(f"Error processing the file: {e}")
+        st.write("Please ensure your Excel file has the exact columns mentioned above.")
